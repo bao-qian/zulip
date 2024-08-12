@@ -9,8 +9,8 @@ import * as recent_view_ui from "./recent_view_ui";
 import * as settings_muted_users from "./settings_muted_users";
 
 export function rerender_for_muted_user(): void {
-    for (const msg_list of message_lists.all_rendered_message_lists()) {
-        msg_list.update_muting_and_rerender();
+    for (const msg_list_data of message_lists.non_rendered_data()) {
+        msg_list_data.update_items_for_muting();
     }
 
     if (overlays.settings_open() && settings_muted_users.loaded) {

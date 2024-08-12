@@ -29,6 +29,7 @@ import * as message_fetch from "./message_fetch";
 import * as message_helper from "./message_helper";
 import * as message_list from "./message_list";
 import {MessageListData} from "./message_list_data";
+import * as message_list_data_cache from "./message_list_data_cache";
 import * as message_lists from "./message_lists";
 import * as message_scroll_state from "./message_scroll_state";
 import * as message_store from "./message_store";
@@ -141,10 +142,20 @@ function create_and_update_message_list(filter, id_info, opts) {
     }
 
     if (!restore_rendered_list) {
-        let msg_data = new MessageListData({
-            filter,
-            excludes_muted_topics,
-        });
+        let msg_data = message_list_data_cache.get(filter);
+        let msg_data_is_prepopulated = true;
+        if (msg_data === undefined) {
+            // If we don't have a cached message list for the narrow, we
+            // need to construct one from scratch.
+            msg_data = new MessageListData({
+                filter,
+                excludes_muted_topics,
+            });
+            msg_data_is_prepopulated = false;
+        } else {
+            // Do updates to msg_data that might change the message we select here.
+            msg_data.update_items_for_muting();
+        }
 
         // Populate the message list if we can apply our filter locally (i.e.
         // with no server help) and we have the message we want to select.
@@ -153,7 +164,27 @@ function create_and_update_message_list(filter, id_info, opts) {
             maybe_add_local_messages({
                 id_info,
                 msg_data,
+                msg_data_is_prepopulated,
             });
+
+            if (msg_data_is_prepopulated && !id_info.local_select_id) {
+                // If we don't have a message to select from the cached
+                // messages of the narrow, try again by populating from
+                // all_message_data.
+                //
+                // TODO: Try other super sets of messages to populate from.
+                msg_data_is_prepopulated = false;
+                msg_data = new MessageListData({
+                    filter,
+                    excludes_muted_topics,
+                });
+
+                maybe_add_local_messages({
+                    id_info,
+                    msg_data,
+                    msg_data_is_prepopulated,
+                });
+            }
         }
 
         if (!id_info.local_select_id) {
@@ -885,6 +916,11 @@ export function maybe_add_local_messages(opts) {
     const msg_data = opts.msg_data;
     const filter = msg_data.filter;
     const unread_info = narrow_state.get_first_unread_info(filter);
+    const msg_data_is_prepopulated = opts.msg_data_is_prepopulated;
+
+    if (msg_data_is_prepopulated && msg_data.empty()) {
+        return;
+    }
 
     // If we don't have a specific message we're hoping to select
     // (i.e. no `target_id`) and the narrow's filter doesn't
@@ -933,7 +969,7 @@ export function maybe_add_local_messages(opts) {
         // need to look at unread here.
         id_info.final_select_id = min_defined(id_info.target_id, unread_info.msg_id);
 
-        if (!load_local_messages(msg_data)) {
+        if (!msg_data_is_prepopulated && !load_local_messages(msg_data)) {
             return;
         }
 
@@ -959,15 +995,26 @@ export function maybe_add_local_messages(opts) {
         // Without unread messages or a target ID, we're narrowing to
         // the very latest message or first unread if matching the narrow allows.
 
-        if (!all_messages_data.fetch_status.has_found_newest()) {
-            // If all_messages_data is not caught up, then we cannot
-            // populate the latest messages for the target narrow
-            // correctly from there, so we must go to the server.
-            return;
+        if (msg_data_is_prepopulated) {
+            if (!msg_data.fetch_status.has_found_newest()) {
+                // If we have messages locally, but we don't have the
+                // latest message, we must go to the server to get it or retry without
+                // having a prepopulated message list data.
+                return;
+            }
+        } else {
+            if (!all_messages_data.fetch_status.has_found_newest()) {
+                // If all_messages_data is not caught up, then we cannot
+                // populate the latest messages for the target narrow
+                // correctly from there, so we must go to the server.
+                return;
+            }
+
+            if (!load_local_messages(msg_data)) {
+                return;
+            }
         }
-        if (!load_local_messages(msg_data)) {
-            return;
-        }
+
         // Otherwise, we have matching messages, and all_messages_data
         // is caught up, so the last message in our now-populated
         // msg_data object must be the last message matching the
@@ -990,15 +1037,16 @@ export function maybe_add_local_messages(opts) {
     //
     // And similarly for `near: max_int` with has_found_newest.
     if (
-        all_messages_data.visibly_empty() ||
-        id_info.target_id < all_messages_data.first().id ||
-        id_info.target_id > all_messages_data.last().id
+        !msg_data_is_prepopulated &&
+        (all_messages_data.visibly_empty() ||
+            id_info.target_id < all_messages_data.first().id ||
+            id_info.target_id > all_messages_data.last().id)
     ) {
         // If the target message is outside the range that we had
         // available for local population, we must go to the server.
         return;
     }
-    if (!load_local_messages(msg_data)) {
+    if (!msg_data_is_prepopulated && !load_local_messages(msg_data)) {
         return;
     }
     if (msg_data.get(id_info.target_id)) {
