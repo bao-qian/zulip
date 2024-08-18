@@ -85,3 +85,12 @@ export function clear(): void {
     cache = new Map([[0, all_messages_data.all_messages_data]]);
     latest_key = 0;
 }
+
+export function remove(filter: Filter): void {
+    for (const [key, cached_data] of cache.entries()) {
+        if (cached_data.filter.equals(filter)) {
+            cache.delete(key);
+            return;
+        }
+    }
+}
